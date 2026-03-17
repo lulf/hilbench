@@ -1,8 +1,17 @@
-//! Crate to coordinate a selection of target probes.
-use serde::{Deserialize, Serialize};
+//! Crate to coordinate selection of target probes across multiple processes.
+//!
+//! Uses an on-disk SQLite database (WAL mode) so that multiple hilbench-agent
+//! processes can safely coordinate which probes are in use.
+
+mod db;
+
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::Duration;
+
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProbeConfig {
@@ -18,63 +27,139 @@ pub struct TargetConfig {
 
 static SELECTOR: OnceLock<ProbeSelector> = OnceLock::new();
 
-/// Initialize global selector based on config
-pub fn init(config: ProbeConfig) -> &'static ProbeSelector {
-    SELECTOR.get_or_init(|| ProbeSelector::new(config))
+/// Initialize global selector backed by SQLite at `db_path`.
+/// Populates the database from `config` if not already initialized.
+pub fn init(db_path: &Path, config: ProbeConfig) -> Result<&'static ProbeSelector> {
+    // We need to handle the case where OnceLock is already set.
+    // Since we can't return a Result from get_or_init, do the init first.
+    if let Some(s) = SELECTOR.get() {
+        return Ok(s);
+    }
+    let selector = ProbeSelector::new(db_path, config)?;
+    Ok(SELECTOR.get_or_init(|| selector))
 }
 
 pub struct ProbeSelector {
-    targets: Vec<(AtomicBool, TargetConfig)>,
+    db_path: PathBuf,
+    owner_id: String,
+    stale_timeout: Duration,
 }
 
-#[derive(Debug)]
-pub struct Target<'d> {
+/// A claimed target. Releases the claim on drop.
+pub struct Target {
     config: TargetConfig,
-    taken: &'d AtomicBool,
+    db_path: PathBuf,
+    owner_id: String,
+    target_id: i64,
 }
 
 impl ProbeSelector {
-    fn new(config: ProbeConfig) -> Self {
-        let mut targets = Vec::new();
-        for t in config.targets {
-            targets.push((AtomicBool::new(false), t));
-        }
-        Self { targets }
+    fn new(db_path: &Path, config: ProbeConfig) -> Result<Self> {
+        let conn = db::open_db(db_path)?;
+        db::init_db(&conn, &config)?;
+        Ok(Self {
+            db_path: db_path.to_owned(),
+            owner_id: uuid::Uuid::new_v4().to_string(),
+            stale_timeout: Duration::from_secs(300),
+        })
     }
 
-    /// Select a target with the provided labels
-    pub fn select<'m>(&'m self, labels: &[(&str, &str)]) -> Option<Target<'m>> {
-        for (taken, config) in &self.targets {
-            let mut matched = true;
-            for (key, value) in labels {
-                let v = config.labels.get(*key);
-                if let Some(v) = v {
-                    if v != value {
-                        matched = false;
-                        break;
-                    }
-                }
+    /// Set the stale lock timeout. Locks older than this are automatically released.
+    pub fn set_stale_timeout(&mut self, timeout: Duration) {
+        self.stale_timeout = timeout;
+    }
+
+    /// Try to select a target matching `labels`. Returns immediately.
+    /// Returns `Ok(None)` if no matching target is available.
+    pub fn try_select(&self, labels: &[(&str, &str)]) -> Result<Option<Target>> {
+        let conn = db::open_db(&self.db_path)?;
+        db::release_stale(&conn, self.stale_timeout)?;
+        db::try_claim_one(&conn, &self.owner_id, labels).map(|opt| {
+            opt.map(|(id, config)| Target {
+                config,
+                db_path: self.db_path.clone(),
+                owner_id: self.owner_id.clone(),
+                target_id: id,
+            })
+        })
+    }
+
+    /// Wait until a target matching `labels` becomes available.
+    pub async fn select(&self, labels: &[(&str, &str)]) -> Result<Target> {
+        let mut interval = Duration::from_millis(100);
+        let max_interval = Duration::from_secs(2);
+        loop {
+            if let Some(target) = self.try_select(labels)? {
+                return Ok(target);
             }
-            if matched && taken.swap(true, Ordering::Acquire) == false {
-                return Some(Target {
-                    config: config.clone(),
-                    taken,
-                });
-            }
+            tokio::time::sleep(interval).await;
+            interval = (interval * 2).min(max_interval);
         }
-        None
+    }
+
+    /// Atomically try to select one target per label set.
+    /// Returns `Ok(None)` if any label set cannot be satisfied — no targets are claimed.
+    pub fn try_select_multiple(&self, label_sets: &[&[(&str, &str)]]) -> Result<Option<Vec<Target>>> {
+        let conn = db::open_db(&self.db_path)?;
+        db::release_stale(&conn, self.stale_timeout)?;
+        let results = db::try_claim_multiple(&conn, &self.owner_id, label_sets)?;
+        match results {
+            Some(pairs) => Ok(Some(
+                pairs
+                    .into_iter()
+                    .map(|(id, config)| Target {
+                        config,
+                        db_path: self.db_path.clone(),
+                        owner_id: self.owner_id.clone(),
+                        target_id: id,
+                    })
+                    .collect(),
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Wait until all label sets can be simultaneously satisfied, then claim them atomically.
+    pub async fn select_multiple(&self, label_sets: &[&[(&str, &str)]]) -> Result<Vec<Target>> {
+        let mut interval = Duration::from_millis(100);
+        let max_interval = Duration::from_secs(2);
+        loop {
+            if let Some(targets) = self.try_select_multiple(label_sets)? {
+                return Ok(targets);
+            }
+            tokio::time::sleep(interval).await;
+            interval = (interval * 2).min(max_interval);
+        }
     }
 }
 
-impl<'d> Target<'d> {
-    /// Probe identifier
+impl Target {
+    /// Get the configuration of this target.
     pub fn config(&self) -> &TargetConfig {
         &self.config
     }
 }
 
-impl<'d> Drop for Target<'d> {
+impl Drop for Target {
     fn drop(&mut self) {
-        self.taken.store(false, Ordering::Release);
+        if let Ok(conn) = db::open_db(&self.db_path) {
+            let _ = db::release_target(&conn, self.target_id, &self.owner_id);
+        }
     }
 }
+
+/// Check if all selector labels match the target's labels.
+/// A label matches if the target doesn't have the key, or if it has the key with the same value.
+fn labels_match(target_labels: &HashMap<String, String>, selector: &[(&str, &str)]) -> bool {
+    for (key, value) in selector {
+        if let Some(v) = target_labels.get(*key) {
+            if v != value {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests;
