@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use log::warn;
 use rusqlite::{params, Connection};
 
 use crate::{labels_match, ProbeConfig, TargetConfig};
@@ -32,8 +33,7 @@ pub fn open_db(path: &Path) -> Result<Connection> {
 /// Populate the database from config if not already initialized.
 /// Uses INSERT OR IGNORE so concurrent calls with the same config are safe.
 pub fn init_db(conn: &Connection, config: &ProbeConfig) -> Result<()> {
-    let mut stmt =
-        conn.prepare("INSERT OR IGNORE INTO targets (chip, probe, labels) VALUES (?1, ?2, ?3)")?;
+    let mut stmt = conn.prepare("INSERT OR IGNORE INTO targets (chip, probe, labels) VALUES (?1, ?2, ?3)")?;
     for t in &config.targets {
         let labels_json = serde_json::to_string(&t.labels)?;
         stmt.execute(params![t.chip, t.probe, labels_json])?;
@@ -44,13 +44,20 @@ pub fn init_db(conn: &Connection, config: &ProbeConfig) -> Result<()> {
 /// Release targets whose `taken_at` is older than `timeout`.
 pub fn release_stale(conn: &Connection, timeout: Duration) -> Result<()> {
     let secs = timeout.as_secs() as f64;
-    conn.execute(
+    let released = conn.execute(
         "UPDATE targets SET taken_by = NULL, taken_at = NULL
          WHERE taken_by IS NOT NULL
            AND taken_at IS NOT NULL
            AND julianday('now') - julianday(taken_at) > ?1 / 86400.0",
         params![secs],
     )?;
+    if released > 0 {
+        warn!(
+            "Released {} stale target lock(s) (older than {}s)",
+            released,
+            timeout.as_secs()
+        );
+    }
     Ok(())
 }
 
