@@ -186,10 +186,6 @@ impl ProbeSelector {
                 return Ok(targets);
             }
             if !logged_waiting {
-                info!(
-                    "Waiting for {} targets to become simultaneously available...",
-                    label_sets.len()
-                );
                 logged_waiting = true;
             }
             tokio::time::sleep(interval).await;
