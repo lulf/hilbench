@@ -67,6 +67,49 @@ struct AvailableTarget {
     config: TargetConfig,
 }
 
+/// Fetch all targets from the database (regardless of claim status).
+fn fetch_all(conn: &Connection) -> Result<Vec<TargetConfig>> {
+    let mut stmt = conn.prepare("SELECT chip, probe, labels FROM targets")?;
+    let rows = stmt.query_map([], |row| {
+        let chip: String = row.get(0)?;
+        let probe: String = row.get(1)?;
+        let labels_json: String = row.get(2)?;
+        Ok((chip, probe, labels_json))
+    })?;
+    let mut result = Vec::new();
+    for row in rows {
+        let (chip, probe, labels_json) = row?;
+        let labels: HashMap<String, String> = serde_json::from_str(&labels_json).unwrap_or_default();
+        result.push(TargetConfig { chip, probe, labels });
+    }
+    Ok(result)
+}
+
+/// Check whether the given label sets can ever be simultaneously satisfied
+/// by the targets in the database (ignoring claim status).
+pub fn can_satisfy(conn: &Connection, label_sets: &[&[(&str, &str)]]) -> Result<bool> {
+    let all_targets = fetch_all(conn)?;
+    let mut used_indices: Vec<usize> = Vec::new();
+
+    for labels in label_sets {
+        let mut found = false;
+        for (i, target) in all_targets.iter().enumerate() {
+            if used_indices.contains(&i) {
+                continue;
+            }
+            if labels_match(&target.labels, labels) {
+                used_indices.push(i);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Fetch all available (unclaimed) targets from the database.
 fn fetch_available(conn: &Connection) -> Result<Vec<AvailableTarget>> {
     let mut stmt = conn.prepare("SELECT id, chip, probe, labels FROM targets WHERE taken_by IS NULL")?;

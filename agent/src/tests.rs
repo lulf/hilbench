@@ -220,6 +220,39 @@ async fn select_multiple_waits() {
     handle.await.unwrap();
 }
 
+#[test]
+fn select_multiple_unsatisfiable_fails_immediately() {
+    let dir = tempfile::tempdir().unwrap();
+    let sel = make_selector(dir.path(), test_config());
+
+    // Request 3 ARM targets but only 2 exist
+    let label_sets: &[&[(&str, &str)]] = &[&[("arch", "arm")], &[("arch", "arm")], &[("arch", "arm")]];
+    let result = sel.try_select_multiple(label_sets).unwrap();
+    assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn select_unsatisfiable_labels_fails_early() {
+    let dir = tempfile::tempdir().unwrap();
+    let sel = make_selector(dir.path(), test_config());
+
+    let result = sel.select(&[("arch", "riscv")]).await;
+    let err = result.err().expect("expected error");
+    assert!(err.to_string().contains("no target exists"), "got: {}", err);
+}
+
+#[tokio::test]
+async fn select_multiple_unsatisfiable_labels_fails_early() {
+    let dir = tempfile::tempdir().unwrap();
+    let sel = make_selector(dir.path(), test_config());
+
+    // 3 ARM targets requested but only 2 exist in db
+    let label_sets: &[&[(&str, &str)]] = &[&[("arch", "arm")], &[("arch", "arm")], &[("arch", "arm")]];
+    let result = sel.select_multiple(label_sets).await;
+    let err = result.err().expect("expected error");
+    assert!(err.to_string().contains("not enough targets"), "got: {}", err);
+}
+
 // Helper for test readability
 impl TargetConfig {
     fn board_label(&self) -> &str {

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
@@ -118,7 +118,15 @@ impl ProbeSelector {
     }
 
     /// Wait until a target matching `labels` becomes available.
+    /// Fails immediately if no target in the database matches the labels.
     pub async fn select(&self, labels: &[(&str, &str)]) -> Result<Target> {
+        let conn = db::open_db(&self.db_path)?;
+        if !db::can_satisfy(&conn, &[labels])? {
+            bail!(
+                "no target exists matching labels [{}]",
+                fmt_labels(labels)
+            );
+        }
         let start = Instant::now();
         let mut interval = Duration::from_millis(100);
         let max_interval = Duration::from_secs(2);
@@ -178,7 +186,19 @@ impl ProbeSelector {
     }
 
     /// Wait until all label sets can be simultaneously satisfied, then claim them atomically.
+    /// Fails immediately if the database doesn't have enough matching targets to ever satisfy all label sets.
     pub async fn select_multiple(&self, label_sets: &[&[(&str, &str)]]) -> Result<Vec<Target>> {
+        let conn = db::open_db(&self.db_path)?;
+        if !db::can_satisfy(&conn, label_sets)? {
+            let descriptions: Vec<_> = label_sets
+                .iter()
+                .map(|ls| format!("[{}]", fmt_labels(ls)))
+                .collect();
+            bail!(
+                "not enough targets in database to satisfy all label sets: {}",
+                descriptions.join(", ")
+            );
+        }
         let start = Instant::now();
         let mut interval = Duration::from_millis(100);
         let max_interval = Duration::from_secs(2);
