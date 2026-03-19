@@ -131,16 +131,32 @@ impl ProbeSelector {
         let mut interval = Duration::from_millis(100);
         let max_interval = Duration::from_secs(2);
         let mut logged_waiting = false;
+        let mut db_retries = 0;
         loop {
-            if let Some(target) = self.try_select(labels)? {
-                if logged_waiting {
-                    info!(
-                        "Acquired target probe={} after {:.1}s wait",
-                        target.config.probe,
-                        start.elapsed().as_secs_f64()
-                    );
+            match self.try_select(labels) {
+                Ok(Some(target)) => {
+                    if logged_waiting {
+                        info!(
+                            "Acquired target probe={} after {:.1}s wait",
+                            target.config.probe,
+                            start.elapsed().as_secs_f64()
+                        );
+                    }
+                    return Ok(target);
                 }
-                return Ok(target);
+                Ok(None) => {}
+                Err(e) => {
+                    db_retries += 1;
+                    if db_retries >= 10 {
+                        return Err(e);
+                    }
+                    warn!(
+                        "Database error selecting target (retry {}/10): {}",
+                        db_retries, e
+                    );
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    continue;
+                }
             }
             if !logged_waiting {
                 info!("Waiting for target matching [{}]...", fmt_labels(labels));
@@ -203,18 +219,34 @@ impl ProbeSelector {
         let mut interval = Duration::from_millis(100);
         let max_interval = Duration::from_secs(2);
         let mut logged_waiting = false;
+        let mut db_retries = 0;
         loop {
-            if let Some(targets) = self.try_select_multiple(label_sets)? {
-                if logged_waiting {
-                    let probes: Vec<_> = targets.iter().map(|t| t.config.probe.as_str()).collect();
-                    info!(
-                        "Acquired {} targets [{}] after {:.1}s wait",
-                        targets.len(),
-                        probes.join(", "),
-                        start.elapsed().as_secs_f64()
-                    );
+            match self.try_select_multiple(label_sets) {
+                Ok(Some(targets)) => {
+                    if logged_waiting {
+                        let probes: Vec<_> = targets.iter().map(|t| t.config.probe.as_str()).collect();
+                        info!(
+                            "Acquired {} targets [{}] after {:.1}s wait",
+                            targets.len(),
+                            probes.join(", "),
+                            start.elapsed().as_secs_f64()
+                        );
+                    }
+                    return Ok(targets);
                 }
-                return Ok(targets);
+                Ok(None) => {}
+                Err(e) => {
+                    db_retries += 1;
+                    if db_retries >= 10 {
+                        return Err(e);
+                    }
+                    warn!(
+                        "Database error selecting targets (retry {}/10): {}",
+                        db_retries, e
+                    );
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    continue;
+                }
             }
             if !logged_waiting {
                 info!(

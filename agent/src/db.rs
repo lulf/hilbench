@@ -14,7 +14,7 @@ use crate::{labels_match, ProbeConfig, TargetConfig};
 pub fn open_db(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path).context("failed to open SQLite database")?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "busy_timeout", 5000)?;
+    conn.pragma_update(None, "busy_timeout", 30000)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS targets (
             id       INTEGER PRIMARY KEY AUTOINCREMENT,
