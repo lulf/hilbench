@@ -32,13 +32,14 @@ pub fn open_db(path: &Path) -> Result<Connection> {
 
 /// Populate the database from config if not already initialized.
 /// Uses INSERT OR IGNORE so concurrent calls with the same config are safe.
-pub fn init_db(conn: &Connection, config: &ProbeConfig) -> Result<()> {
+pub fn init_db(conn: &Connection, config: &ProbeConfig) -> Result<usize> {
     let mut stmt = conn.prepare("INSERT OR IGNORE INTO targets (chip, probe, labels) VALUES (?1, ?2, ?3)")?;
+    let mut added = 0;
     for t in &config.targets {
         let labels_json = serde_json::to_string(&t.labels)?;
-        stmt.execute(params![t.chip, t.probe, labels_json])?;
+        added += stmt.execute(params![t.chip, t.probe, labels_json])?;
     }
-    Ok(())
+    Ok(added)
 }
 
 /// Release targets whose `taken_at` is older than `timeout`.

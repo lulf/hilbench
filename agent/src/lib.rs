@@ -34,6 +34,7 @@ pub fn init(db_path: &Path, config: ProbeConfig) -> Result<&'static ProbeSelecto
     // We need to handle the case where OnceLock is already set.
     // Since we can't return a Result from get_or_init, do the init first.
     if let Some(s) = SELECTOR.get() {
+        info!("Probe selector already initialized, reusing existing instance");
         return Ok(s);
     }
     let selector = ProbeSelector::new(db_path, config)?;
@@ -58,14 +59,24 @@ impl ProbeSelector {
     fn new(db_path: &Path, config: ProbeConfig) -> Result<Self> {
         let conn = db::open_db(db_path)?;
         let target_count = config.targets.len();
-        db::init_db(&conn, &config)?;
+        let added = db::init_db(&conn, &config)?;
         let owner_id = uuid::Uuid::new_v4().to_string();
-        info!(
-            "Initialized probe selector with {} targets at {:?} (owner: {})",
-            target_count,
-            db_path,
-            &owner_id[..8]
-        );
+        if added > 0 {
+            info!(
+                "Initialized probe selector with {} targets ({} added) at {:?} (owner: {})",
+                target_count,
+                added,
+                db_path,
+                &owner_id[..8]
+            );
+        } else {
+            info!(
+                "Initialized probe selector with {} targets (already populated) at {:?} (owner: {})",
+                target_count,
+                db_path,
+                &owner_id[..8]
+            );
+        }
         Ok(Self {
             db_path: db_path.to_owned(),
             owner_id,
@@ -186,6 +197,10 @@ impl ProbeSelector {
                 return Ok(targets);
             }
             if !logged_waiting {
+                info!(
+                    "Waiting for {} target(s) matching all label sets...",
+                    label_sets.len()
+                );
                 logged_waiting = true;
             }
             tokio::time::sleep(interval).await;
