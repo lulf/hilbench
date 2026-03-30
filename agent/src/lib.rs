@@ -30,14 +30,15 @@ static SELECTOR: OnceLock<ProbeSelector> = OnceLock::new();
 
 /// Initialize global selector backed by SQLite at `db_path`.
 /// Populates the database from `config` if not already initialized.
-pub fn init(db_path: &Path, config: ProbeConfig) -> Result<&'static ProbeSelector> {
+/// Locks older than `stale_timeout` are automatically released.
+pub fn init(db_path: &Path, config: ProbeConfig, stale_timeout: Duration) -> Result<&'static ProbeSelector> {
     // We need to handle the case where OnceLock is already set.
     // Since we can't return a Result from get_or_init, do the init first.
     if let Some(s) = SELECTOR.get() {
         info!("Probe selector already initialized, reusing existing instance");
         return Ok(s);
     }
-    let selector = ProbeSelector::new(db_path, config)?;
+    let selector = ProbeSelector::new(db_path, config, stale_timeout)?;
     Ok(SELECTOR.get_or_init(|| selector))
 }
 
@@ -56,7 +57,7 @@ pub struct Target {
 }
 
 impl ProbeSelector {
-    fn new(db_path: &Path, config: ProbeConfig) -> Result<Self> {
+    fn new(db_path: &Path, config: ProbeConfig, stale_timeout: Duration) -> Result<Self> {
         let target_count = config.targets.len();
         let owner_id = uuid::Uuid::new_v4().to_string();
 
@@ -83,7 +84,7 @@ impl ProbeSelector {
                     return Ok(Self {
                         db_path: db_path.to_owned(),
                         owner_id,
-                        stale_timeout: Duration::from_secs(300),
+                        stale_timeout,
                     });
                 }
                 Err(e) => {
@@ -97,11 +98,6 @@ impl ProbeSelector {
             }
         }
         Err(last_err.unwrap())
-    }
-
-    /// Set the stale lock timeout. Locks older than this are automatically released.
-    pub fn set_stale_timeout(&mut self, timeout: Duration) {
-        self.stale_timeout = timeout;
     }
 
     /// Try to select a target matching `labels`. Returns immediately.
