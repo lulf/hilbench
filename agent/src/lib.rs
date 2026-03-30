@@ -57,31 +57,46 @@ pub struct Target {
 
 impl ProbeSelector {
     fn new(db_path: &Path, config: ProbeConfig) -> Result<Self> {
-        let conn = db::open_db(db_path)?;
         let target_count = config.targets.len();
-        let added = db::init_db(&conn, &config)?;
         let owner_id = uuid::Uuid::new_v4().to_string();
-        if added > 0 {
-            info!(
-                "Initialized probe selector with {} targets ({} added) at {:?} (owner: {})",
-                target_count,
-                added,
-                db_path,
-                &owner_id[..8]
-            );
-        } else {
-            info!(
-                "Initialized probe selector with {} targets (already populated) at {:?} (owner: {})",
-                target_count,
-                db_path,
-                &owner_id[..8]
-            );
+
+        let mut last_err = None;
+        for attempt in 1..=10 {
+            match db::open_db(db_path).and_then(|conn| db::init_db(&conn, &config).map(|added| added)) {
+                Ok(added) => {
+                    if added > 0 {
+                        info!(
+                            "Initialized probe selector with {} targets ({} added) at {:?} (owner: {})",
+                            target_count,
+                            added,
+                            db_path,
+                            &owner_id[..8]
+                        );
+                    } else {
+                        info!(
+                            "Initialized probe selector with {} targets (already populated) at {:?} (owner: {})",
+                            target_count,
+                            db_path,
+                            &owner_id[..8]
+                        );
+                    }
+                    return Ok(Self {
+                        db_path: db_path.to_owned(),
+                        owner_id,
+                        stale_timeout: Duration::from_secs(300),
+                    });
+                }
+                Err(e) => {
+                    warn!(
+                        "Database error during init (attempt {}/10): {}",
+                        attempt, e
+                    );
+                    last_err = Some(e);
+                    std::thread::sleep(Duration::from_secs(3));
+                }
+            }
         }
-        Ok(Self {
-            db_path: db_path.to_owned(),
-            owner_id,
-            stale_timeout: Duration::from_secs(300),
-        })
+        Err(last_err.unwrap())
     }
 
     /// Set the stale lock timeout. Locks older than this are automatically released.
