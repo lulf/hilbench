@@ -5,6 +5,7 @@ use crate::{ProbeConfig, ProbeSelector, TargetConfig};
 
 fn test_config() -> ProbeConfig {
     ProbeConfig {
+        server: None,
         targets: vec![
             TargetConfig {
                 chip: "nrf52840".into(),
@@ -27,7 +28,7 @@ fn test_config() -> ProbeConfig {
 
 fn make_selector(dir: &std::path::Path, config: ProbeConfig) -> ProbeSelector {
     let db_path = dir.join("probes.db");
-    ProbeSelector::new(&db_path, config).unwrap()
+    ProbeSelector::new(&db_path, config, Duration::from_secs(300)).unwrap()
 }
 
 #[test]
@@ -132,11 +133,11 @@ fn init_idempotent() {
     let db_path = dir.path().join("probes.db");
     let config = test_config();
 
-    let s1 = ProbeSelector::new(&db_path, config.clone()).unwrap();
+    let s1 = ProbeSelector::new(&db_path, config.clone(), Duration::from_secs(300)).unwrap();
     let t1 = s1.try_select(&[("arch", "xtensa")]).unwrap().unwrap();
 
     // Re-init with same config should not wipe state
-    let s2 = ProbeSelector::new(&db_path, config).unwrap();
+    let s2 = ProbeSelector::new(&db_path, config, Duration::from_secs(300)).unwrap();
     // xtensa is still taken by s1
     let t2 = s2.try_select(&[("arch", "xtensa")]).unwrap();
     assert!(t2.is_none());
@@ -153,8 +154,8 @@ fn cross_process_coordination() {
     let db_path = dir.path().join("probes.db");
     let config = test_config();
 
-    let s1 = ProbeSelector::new(&db_path, config.clone()).unwrap();
-    let s2 = ProbeSelector::new(&db_path, config).unwrap();
+    let s1 = ProbeSelector::new(&db_path, config.clone(), Duration::from_secs(300)).unwrap();
+    let s2 = ProbeSelector::new(&db_path, config, Duration::from_secs(300)).unwrap();
 
     let t1 = s1.try_select(&[("arch", "xtensa")]).unwrap().unwrap();
     let t2 = s2.try_select(&[("arch", "xtensa")]).unwrap();
@@ -171,13 +172,13 @@ async fn select_waits_for_release() {
     let db_path = dir.path().join("probes.db");
     let config = test_config();
 
-    let sel = ProbeSelector::new(&db_path, config).unwrap();
+    let sel = ProbeSelector::new(&db_path, config, Duration::from_secs(300)).unwrap();
     let held = sel.try_select(&[("arch", "xtensa")]).unwrap().unwrap();
 
     let db_path2 = db_path.clone();
     let config2 = test_config();
     let handle = tokio::spawn(async move {
-        let sel2 = ProbeSelector::new(&db_path2, config2).unwrap();
+        let sel2 = ProbeSelector::new(&db_path2, config2, Duration::from_secs(300)).unwrap();
         // This will poll until the target is released
         let t = tokio::time::timeout(Duration::from_secs(5), sel2.select(&[("arch", "xtensa")]))
             .await
@@ -199,13 +200,13 @@ async fn select_multiple_waits() {
     let db_path = dir.path().join("probes.db");
     let config = test_config();
 
-    let sel = ProbeSelector::new(&db_path, config).unwrap();
+    let sel = ProbeSelector::new(&db_path, config, Duration::from_secs(300)).unwrap();
     let held = sel.try_select(&[("arch", "xtensa")]).unwrap().unwrap();
 
     let db_path2 = db_path.clone();
     let config2 = test_config();
     let handle = tokio::spawn(async move {
-        let sel2 = ProbeSelector::new(&db_path2, config2).unwrap();
+        let sel2 = ProbeSelector::new(&db_path2, config2, Duration::from_secs(300)).unwrap();
         let label_sets: &[&[(&str, &str)]] = &[&[("board", "dk")], &[("arch", "xtensa")]];
         let targets = tokio::time::timeout(Duration::from_secs(5), sel2.select_multiple(label_sets))
             .await

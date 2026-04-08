@@ -15,8 +15,16 @@ use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProbeServer {
+    pub url: String,
+    pub token: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProbeConfig {
     pub targets: Vec<TargetConfig>,
+    #[serde(default)]
+    pub server: Option<ProbeServer>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -46,6 +54,7 @@ pub struct ProbeSelector {
     db_path: PathBuf,
     owner_id: String,
     stale_timeout: Duration,
+    server: Option<ProbeServer>,
 }
 
 /// A claimed target. Releases the claim on drop.
@@ -60,6 +69,7 @@ impl ProbeSelector {
     fn new(db_path: &Path, config: ProbeConfig, stale_timeout: Duration) -> Result<Self> {
         let target_count = config.targets.len();
         let owner_id = uuid::Uuid::new_v4().to_string();
+        let server = config.server.clone();
 
         let mut last_err = None;
         for attempt in 1..=10 {
@@ -85,6 +95,7 @@ impl ProbeSelector {
                         db_path: db_path.to_owned(),
                         owner_id,
                         stale_timeout,
+                        server,
                     });
                 }
                 Err(e) => {
@@ -98,6 +109,11 @@ impl ProbeSelector {
             }
         }
         Err(last_err.unwrap())
+    }
+
+    /// Get the probe server configuration, if set.
+    pub fn server(&self) -> Option<&ProbeServer> {
+        self.server.as_ref()
     }
 
     /// Try to select a target matching `labels`. Returns immediately.
