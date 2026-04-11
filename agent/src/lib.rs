@@ -14,10 +14,19 @@ use anyhow::{bail, Result};
 use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ProbeServer {
     pub url: String,
     pub token: String,
+}
+
+impl std::fmt::Debug for ProbeServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProbeServer")
+            .field("url", &self.url)
+            .field("token", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
