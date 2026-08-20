@@ -302,6 +302,32 @@ impl Target {
     pub fn config(&self) -> &TargetConfig {
         &self.config
     }
+
+    /// Cycle USB power to this target's probe by running `probe-rs cycle-power`,
+    /// optionally against a remote probe server. Returns once the probe has
+    /// re-enumerated. Requires a probe-rs with the cycle-power command and, on the
+    /// machine the probe is attached to, a hub supporting per-port power switching.
+    pub async fn cycle_power(&self, server: Option<&ProbeServer>) -> Result<()> {
+        let mut cmd = tokio::process::Command::new("probe-rs");
+        cmd.arg("cycle-power").arg("--probe").arg(&self.config.probe);
+        if let Some(server) = server {
+            cmd.arg("--host").arg(&server.url);
+            cmd.arg("--token").arg(&server.token);
+        }
+
+        info!("Cycling power for probe={}", self.config.probe);
+        let output = cmd.output().await?;
+        if !output.status.success() {
+            bail!(
+                "probe-rs cycle-power failed for probe={} ({}): {}",
+                self.config.probe,
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        info!("Power cycled probe={}", self.config.probe);
+        Ok(())
+    }
 }
 
 impl Drop for Target {
