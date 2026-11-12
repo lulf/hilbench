@@ -9,7 +9,7 @@ serde_json = "1"
 log = "0.4"
 tokio = { version = "1", default-features = false, features = ["time", "process"] }
 anyhow = "1"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.36", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
